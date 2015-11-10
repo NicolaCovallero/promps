@@ -6,14 +6,16 @@
 #include <actionlib/client/simple_action_client.h>
 #include <geometry_msgs/PoseStamped.h>
 
-#include "ac_promp.h"
-#include "iri_wamik.h"
+    //#include "ac_promp.h"
+    //#include "iri_wamik.h"
 #include <iri_base_algorithm/iri_base_algorithm.h>
+
+#include <visualization_msgs/Marker.h>
 
 #include <string>
 #include <fstream>
 #include <iostream>
-
+#include <cmath>
 
 /*   
 
@@ -31,6 +33,7 @@ class cartesian2joint
 
     ros::NodeHandle n;
 
+    ros::Publisher marker_pub;
 
     std::vector<geometry_msgs::PoseStamped> cartesian_trajectory;
     std::vector<sensor_msgs::JointState> joints_trajectory;
@@ -121,6 +124,59 @@ class cartesian2joint
 
             }
             return;
+        }
+
+        void trajectoryMarker(float& f)
+        {
+
+            marker_pub = n.advertise<visualization_msgs::Marker>("visualization_marker", 10);
+            visualization_msgs::Marker points, line_strip;
+
+            points.header.frame_id = line_strip.header.frame_id = "/iri_wam_link_footprint";
+            points.header.stamp = line_strip.header.stamp = ros::Time::now();
+            points.ns = line_strip.ns = "points_and_lines";
+            points.action = line_strip.action =  visualization_msgs::Marker::ADD;
+            points.pose.orientation.w = line_strip.pose.orientation.w =  1.0;
+
+            points.id = 0;
+            line_strip.id = 1;
+
+            points.type = visualization_msgs::Marker::POINTS;
+            line_strip.type = visualization_msgs::Marker::LINE_STRIP;
+
+                    // POINTS markers use x and y scale for width/height respectively
+            points.scale.x = 0.002;
+            points.scale.y = 0.002;
+
+            // LINE_STRIP/LINE_LIST markers use only the x component of scale, for the line width
+            line_strip.scale.x = 0.001;
+
+
+
+            // Points are green
+            points.color.g = 1.0f;
+            points.color.a = 1.0;
+
+            // Line strip is blue
+            line_strip.color.b = 1.0;
+            line_strip.color.a = 1.0;
+
+
+            // Create the vertices for the points and lines
+            for (uint32_t i = 0; i < cartesian_trajectory.size(); ++i)
+            {
+              
+              geometry_msgs::Point p;
+              p.x = cartesian_trajectory[i].pose.position.x;
+              p.y = cartesian_trajectory[i].pose.position.y;
+              p.z = cartesian_trajectory[i].pose.position.z;
+
+              points.points.push_back(p);
+              line_strip.points.push_back(p);
+            }
+
+            marker_pub.publish(points);
+            marker_pub.publish(line_strip);
         }
 
         void writeJointSpaceTrajectory() // writes only positions
@@ -285,6 +341,7 @@ int main(int argc, char** argv)
     // Init the ROS node
     ros::init(argc, argv, "robot_driver");
 
+
     cartesian2joint c2j;
     c2j.readTrainingSample();//read the trajectory from the file cartesian_trajectory.txt
     c2j.writeJointSpaceTrajectory();//write tje joints value in joints_trajectory.txt
@@ -292,6 +349,15 @@ int main(int argc, char** argv)
     // move the robot to show the trajectory
     c2j.goHome(); 
     c2j.performTrajectory();
+
+    float f = 0.0;
+    ros::Rate loop_rate(10);
+    while(ros::ok())
+    {
+        c2j.trajectoryMarker(f);
+        loop_rate.sleep();  
+        ros::spinOnce();
+    }
 
     return 0;
 }
