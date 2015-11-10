@@ -21,7 +21,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 find_package(Eigen3 REQUIRED COMPONENTS system)
-find_package(ac_math REQUIRED)
+#find_package(ac_math REQUIRED)
 find_package(iriutils REQUIRED)
 
 
