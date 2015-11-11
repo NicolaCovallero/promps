@@ -17,6 +17,9 @@
 #include <iostream>
 #include <cmath>
 
+#include <tf/transform_datatypes.h>
+
+
 /*   
 
     useful commands:
@@ -25,6 +28,49 @@
 */
 typedef actionlib::SimpleActionClient< control_msgs::FollowJointTrajectoryAction > TrajClient;
 
+std::string trajectory_frame = "/iri_wam_link_base";
+
+tf::Quaternion quaternionFromVector(tf::Vector3 v2)
+{
+  // all the normalizations are important! except the alst one (with this method!)
+  tf::Vector3 v1 (0,0,1); // this to make it works with ros
+  v2.normalize();
+
+  tf::Vector3 cross_vector = v1.cross(v2);
+  cross_vector.normalize();
+  
+  double angle = acos(v1.dot(v2))/2;
+  //check for nans values
+  // this occures only when v2 has the same direction of v1 (v2.normalize()=v1.normalize())
+  if(cross_vector.x() != cross_vector.x()) //this will be true only for nans value
+  {
+    cross_vector.setX(0);
+    cross_vector.setY(0);
+    cross_vector.setZ(0);
+    // check if the sense of v2 is positive or negative
+    if(v2.z()<0)
+    { // this means that the sense has to eb negative,
+      // and it is equal to a rotation in the y axis of M_PI
+      angle = angle + M_PI;
+      cross_vector.setY(1);
+    }
+    
+  }
+
+  // debug:
+  //std::cout << "angle(degree): " << angle*180/M_PI << std::endl;
+  //std::cout << "sin(angle): " << sin(angle) << std::endl;
+
+  // Build quaternion
+  tf::Quaternion quatern; 
+  quatern.setX(cross_vector.x() * sin(angle));
+  quatern.setY(cross_vector.y() * sin(angle));
+  quatern.setZ(cross_vector.z() * sin(angle));
+  quatern.setW(cos(angle));  
+  quatern.normalize(); 
+
+  return quatern;
+}
 
 class cartesian2joint
 {
@@ -33,13 +79,15 @@ class cartesian2joint
 
     ros::NodeHandle n;
 
-    ros::Publisher marker_pub;
+    
 
+    double time_trajectory; //time for the trajectoiry execution (total time)
     std::vector<geometry_msgs::PoseStamped> cartesian_trajectory;
     std::vector<sensor_msgs::JointState> joints_trajectory;
     ros::ServiceClient client;
     iri_common_drivers_msgs::QueryInverseKinematics srv;
     TrajClient* traj_client_;
+    ros::Publisher marker_pub;
 
     public:
 
@@ -47,6 +95,7 @@ class cartesian2joint
         {
            client = n.serviceClient<iri_common_drivers_msgs::QueryInverseKinematics>(this->srv_name_.c_str());
            traj_client_ = new TrajClient("/iri_wam/iri_wam_controller/follow_joint_trajectory", true);
+            marker_pub = n.advertise<visualization_msgs::Marker>("visualization_marker", 10);
 
         }
 
@@ -56,14 +105,23 @@ class cartesian2joint
 
             std::cout << "Loading the info from training_data_info\n";
             int i =0;
+            
+            //poiting down
+            tf::Vector3 vec;
+            vec.setX(0);vec.setY(0);vec.setZ(-1);
+            tf::Quaternion quat = quaternionFromVector(vec);
+            std::cout << "quat  x: " << quat.x() << " y: " << quat.y() << " z: " << quat.z() << " w: " << quat.w() << "\n";
+            sleep(1);
+
             if(myfile.is_open())
             {
+                myfile >> time_trajectory;
                 while (!myfile.eof())
                 {
                     double x,y,z;
                     myfile >> x >> y >> z;
                     geometry_msgs::PoseStamped cartesian_pose;
-                    cartesian_pose.header.frame_id = "/iri_wam_link_base";
+                    cartesian_pose.header.frame_id = trajectory_frame;
                     cartesian_pose.header.seq = i;
                     cartesian_pose.header.stamp = ros::Time::now();     
                     //try
@@ -77,10 +135,10 @@ class cartesian2joint
                     //    ROS_ERROR("File format wrong");
                     //    std::exit(0);
                     //}
-                    cartesian_pose.pose.orientation.x = 0.0;
-                    cartesian_pose.pose.orientation.y = 0.0;
-                    cartesian_pose.pose.orientation.z = 0.0;
-                    cartesian_pose.pose.orientation.w = 1.0;
+                    cartesian_pose.pose.orientation.x = quat.x();
+                    cartesian_pose.pose.orientation.y = quat.y();
+                    cartesian_pose.pose.orientation.z = quat.z();
+                    cartesian_pose.pose.orientation.w = quat.z();
 
                     cartesian_trajectory.push_back(cartesian_pose);
                     i++;    
@@ -103,7 +161,9 @@ class cartesian2joint
             for (int i = 0; i < cartesian_trajectory.size(); ++i)
             {   
                 srv.request.pose = cartesian_trajectory[i];
-            
+                std::cout << "Requesting IK of x: " << cartesian_trajectory[i].pose.position.x << " y: " <<
+                                            cartesian_trajectory[i].pose.position.y << " z: " <<
+                                             cartesian_trajectory[i].pose.position.z << std::endl;
                 if (client.call(srv))
                 {
                   ROS_INFO("Inverse Kinematics done");
@@ -126,13 +186,12 @@ class cartesian2joint
             return;
         }
 
-        void trajectoryMarker(float& f)
+        void trajectoryMarker()
         {
 
-            marker_pub = n.advertise<visualization_msgs::Marker>("visualization_marker", 10);
             visualization_msgs::Marker points, line_strip;
 
-            points.header.frame_id = line_strip.header.frame_id = "/iri_wam_link_footprint";
+            points.header.frame_id = line_strip.header.frame_id = trajectory_frame;
             points.header.stamp = line_strip.header.stamp = ros::Time::now();
             points.ns = line_strip.ns = "points_and_lines";
             points.action = line_strip.action =  visualization_msgs::Marker::ADD;
@@ -149,7 +208,7 @@ class cartesian2joint
             points.scale.y = 0.002;
 
             // LINE_STRIP/LINE_LIST markers use only the x component of scale, for the line width
-            line_strip.scale.x = 0.001;
+            line_strip.scale.x = 0.005;
 
 
 
@@ -163,6 +222,7 @@ class cartesian2joint
 
 
             // Create the vertices for the points and lines
+            std::cout << "publishign trajectory. Size cartesian_trajectory: " << cartesian_trajectory.size() << std::endl;
             for (uint32_t i = 0; i < cartesian_trajectory.size(); ++i)
             {
               
@@ -239,22 +299,22 @@ class cartesian2joint
             goal.trajectory.points[0].positions[5] = 0.0;
             goal.trajectory.points[0].positions[6] = 0.0;
             goal.trajectory.points[0].velocities.resize(7);
-            goal.trajectory.points[0].velocities[0] = 0.2f;
-            goal.trajectory.points[0].velocities[1] = 0.2f;
-            goal.trajectory.points[0].velocities[2] = 0.2f;
-            goal.trajectory.points[0].velocities[3] = 0.2f;
-            goal.trajectory.points[0].velocities[4] = 0.2f;
-            goal.trajectory.points[0].velocities[5] = 0.2f;
-            goal.trajectory.points[0].velocities[6] = 0.2f;
+            goal.trajectory.points[0].velocities[0] = 0.0f;
+            goal.trajectory.points[0].velocities[1] = 0.0f;
+            goal.trajectory.points[0].velocities[2] = 0.0f;
+            goal.trajectory.points[0].velocities[3] = 0.0f;
+            goal.trajectory.points[0].velocities[4] = 0.0f;
+            goal.trajectory.points[0].velocities[5] = 0.0f;
+            goal.trajectory.points[0].velocities[6] = 0.0f;
             goal.trajectory.points[0].accelerations.resize(7);
-            goal.trajectory.points[0].accelerations[0] = 0.2f;
-            goal.trajectory.points[0].accelerations[1] = 0.2f;
-            goal.trajectory.points[0].accelerations[2] = 0.2f;
-            goal.trajectory.points[0].accelerations[3] = 0.2f;
-            goal.trajectory.points[0].accelerations[4] = 0.2f;
-            goal.trajectory.points[0].accelerations[5] = 0.2f;
-            goal.trajectory.points[0].accelerations[6] = 0.2f;
-            goal.trajectory.points[0].time_from_start = ros::Duration(0.2); // in a trajectory with mor epoints, each point should have a different time stamp
+            goal.trajectory.points[0].accelerations[0] = 0.0f;
+            goal.trajectory.points[0].accelerations[1] = 0.0f;
+            goal.trajectory.points[0].accelerations[2] = 0.0f;
+            goal.trajectory.points[0].accelerations[3] = 0.0f;
+            goal.trajectory.points[0].accelerations[4] = 0.0f;
+            goal.trajectory.points[0].accelerations[5] = 0.0f;
+            goal.trajectory.points[0].accelerations[6] = 0.0f;
+            goal.trajectory.points[0].time_from_start = ros::Duration(2); // in a trajectory with mor epoints, each point should have a different time stamp
 
             
 
@@ -274,6 +334,7 @@ class cartesian2joint
 
         void performTrajectory()
         {
+            //trajectoryMarker();
             while(!traj_client_->waitForServer(ros::Duration(5.0))){
                 ROS_INFO("Waiting for the joint_trajectory_action server");
             }
@@ -303,35 +364,42 @@ class cartesian2joint
                 goal.trajectory.points[i].positions[5] = joints_trajectory[i].position[5];
                 goal.trajectory.points[i].positions[6] = joints_trajectory[i].position[6];
                 goal.trajectory.points[i].velocities.resize(7);
-                goal.trajectory.points[i].velocities[0] = 0.2f;
-                goal.trajectory.points[i].velocities[1] = 0.2f;
-                goal.trajectory.points[i].velocities[2] = 0.2f;
-                goal.trajectory.points[i].velocities[3] = 0.2f;
-                goal.trajectory.points[i].velocities[4] = 0.2f;
-                goal.trajectory.points[i].velocities[5] = 0.2f;
-                goal.trajectory.points[i].velocities[6] = 0.2f;
+                goal.trajectory.points[i].velocities[0] = 0.01f;
+                goal.trajectory.points[i].velocities[1] = 0.01f;
+                goal.trajectory.points[i].velocities[2] = 0.01f;
+                goal.trajectory.points[i].velocities[3] = 0.01f;
+                goal.trajectory.points[i].velocities[4] = 0.01f;
+                goal.trajectory.points[i].velocities[5] = 0.01f;
+                goal.trajectory.points[i].velocities[6] = 0.01f;
                 goal.trajectory.points[i].accelerations.resize(7);
-                goal.trajectory.points[i].accelerations[0] = 0.2f;
-                goal.trajectory.points[i].accelerations[1] = 0.2f;
-                goal.trajectory.points[i].accelerations[2] = 0.2f;
-                goal.trajectory.points[i].accelerations[3] = 0.2f;
-                goal.trajectory.points[i].accelerations[4] = 0.2f;
-                goal.trajectory.points[i].accelerations[5] = 0.2f;
-                goal.trajectory.points[i].accelerations[6] = 0.2f;
-                goal.trajectory.points[i].time_from_start = ros::Duration(i*0.3f); // in a trajectory with mor epoints, each point should have a different time stamp
+                goal.trajectory.points[i].accelerations[0] = 0.01f;
+                goal.trajectory.points[i].accelerations[1] = 0.01f;
+                goal.trajectory.points[i].accelerations[2] = 0.01f;
+                goal.trajectory.points[i].accelerations[3] = 0.01f;
+                goal.trajectory.points[i].accelerations[4] = 0.01f;
+                goal.trajectory.points[i].accelerations[5] = 0.01f;
+                goal.trajectory.points[i].accelerations[6] = 0.01f;
+                goal.trajectory.points[i].time_from_start = ros::Duration(i*time_trajectory/joints_trajectory.size()); // in a trajectory with mor epoints, each point should have a different time stamp
 
             }
 
             goal.trajectory.header.stamp = ros::Time::now() + ros::Duration(1.0);
             ROS_INFO("sending trajectory");
             traj_client_->sendGoal(goal);
-             if (!traj_client_->waitForResult(ros::Duration(10.0)))
+             if (!traj_client_->waitForResult(ros::Duration(time_trajectory*2)))
             { 
                 traj_client_->cancelGoal();
                 ROS_INFO("Action did not finish before the time out.\n"); 
             }
 
             return;
+        }
+
+        void askForOption()
+        {
+            std::cout << "What to do now? [-h to see the available options]\n"; 
+            std::string opt;
+            std::cin >> opt;
         }
 
 };
@@ -345,19 +413,22 @@ int main(int argc, char** argv)
     cartesian2joint c2j;
     c2j.readTrainingSample();//read the trajectory from the file cartesian_trajectory.txt
     c2j.writeJointSpaceTrajectory();//write tje joints value in joints_trajectory.txt
+    c2j.trajectoryMarker();
     
     // move the robot to show the trajectory
+    //c2j.trajectoryMarker();
     c2j.goHome(); 
     c2j.performTrajectory();
+    c2j.trajectoryMarker();
 
     float f = 0.0;
     ros::Rate loop_rate(10);
-    while(ros::ok())
+    /*while(ros::ok())
     {
-        c2j.trajectoryMarker(f);
+        c2j.trajectoryMarker();
         loop_rate.sleep();  
         ros::spinOnce();
-    }
+    }*/
 
     return 0;
 }
