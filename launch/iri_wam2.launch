@@ -1,0 +1,46 @@
+<launch>
+
+  <arg name="ROBOT" default="iri_wam"/>
+  <arg name="IK" default="true"/>
+
+  <!-- these are the arguments you can pass this launch file, for example paused:=true -->
+  <arg name="paused" default="true"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="gui" default="false"/>
+  <arg name="headless" default="false"/>
+  <arg name="debug" default="false"/>
+
+
+  <param name="use_gui" value="$(arg gui)" />
+
+  <!-- Load the URDF into the ROS Parameter Server -->
+  <param name="robot_description"
+         command="$(find xacro)/xacro.py '$(find iri_wam_description)/xacro/iri_wam.urdf.xacro'" />
+
+
+<node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher" />
+      <!--<remap from="robot_description" to="different_robot_description" />
+      <remap from="joint_states" to="different_joint_states" />
+    </node>-->
+<!--
+<node name="joint_state_publisher" pkg="joint_state_publisher" type="joint_state_publisher"
+        respawn="true" output="screen"/>
+-->
+  <group ns="$(arg ROBOT)">
+    <!-- Publish Robot Inverse Kinematics -->
+    <include file="$(find iri_wam_ik)/launch/iri_wam_ik.launch" if="$(arg IK)" >
+      <arg name="ROBOT" value="$(arg ROBOT)" />
+    </include>
+
+    <!-- Publish TCP Robot Inverse Kinematics -->
+    <node name="$(arg ROBOT)_tcp_ik" pkg="iri_wam_tcp_ik" type="iri_wam_tcp_ik" if="$(arg IK)" >
+      <param name="robot_base" type="str" value="/$(arg ROBOT)_link_base" />
+      <!-- Here, robot_tcp and tool_tcp are the same because if not the algorithm would take 
+           the link_7 to link_tcp transformation twice -->
+      <param name="robot_tcp" type="str" value="/$(arg ROBOT)_link_tcp" />
+      <param name="tool_tcp"  type="str" value="/$(arg ROBOT)_link_tcp" />
+      <remap from="$(arg ROBOT)_tcp_ik/wamik" to="$(arg ROBOT)_ik/wamik" />
+    </node>
+  </group>
+</launch>
+
